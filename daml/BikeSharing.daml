@@ -1,0 +1,385 @@
+module BikeSharing where
+import Token
+{-
+-}
+type OrgKey = (Party,Text)
+
+template BikeOrg with
+        owner: Party
+        members: [Party]
+        observers: [Party]
+        name: Text
+    where 
+        signatory owner
+        observer observers,members
+        key ( owner,name ): OrgKey
+        maintainer key._1
+
+        controller owner can
+            AddMember : ContractId BikeOrg with 
+                    newMember : Party
+                do 
+                    create this with 
+                        members = newMember :: members
+                        observers = newMember :: observers
+            
+            AddObserver: ContractId BikeOrg with
+                    newObserver: Party
+                do create this with
+                    observers = newObserver :: observers
+                
+
+        nonconsuming choice Offer : ContractId BikeOffering with
+                party : Party
+                fee: Decimal
+                bikeId: Text
+            controller party
+                do
+                    create BikeOffering with
+                        orgName = this.name
+                        fee = fee
+                        owner = party
+                        approvedBy = []
+                        bikeOrgOwner = this.owner
+                        bikeOwners = this.members
+                        bikeId
+
+
+template BikeOffering with
+        owner: Party
+        fee: Decimal
+        orgName: Text
+        bikeId: Text
+        approvedBy: [Party]
+        bikeOrgOwner: Party
+        bikeOwners: [Party]
+    where
+        signatory owner,approvedBy,bikeOrgOwner
+        observer bikeOwners
+
+        choice Approve: ContractId BikeOffering with
+                approver: Party
+            controller approver
+                do
+                    (orgId,org) <- fetchByKey @BikeOrg (bikeOrgOwner,orgName)
+                    -- assertMsg "BikeOrg needs to be the same as it was before" (org.name == approversOrg.name && org.owner == approversOrg.owner)
+                    assertMsg "Approvers needs to be a member of the org" (elem approver org.members)
+                    assertMsg "Approver can not be the owner" (approver /= owner)
+                    -- assertMsg "Approver needs to be the member of the committee" (approver `elem` org.members)
+                    assertMsg "Already approved by this party"  (approver `notElem` approvedBy)
+                    assertMsg "Try final approve" (length approvedBy /= 2)
+                    create this with
+                        approvedBy = approver :: approvedBy
+                        bikeOwners = org.members
+        
+        choice FinalApprove: (ContractId BikeUsageRight,ContractId BikeOrg) with
+                approver: Party
+            controller approver
+                do
+                    (orgId,org) <- fetchByKey @BikeOrg (bikeOrgOwner,orgName)
+                    -- assertMsg "BikeOrg needs to be the same as it was before" (org.name == approversOrg.name && org.owner == approversOrg.owner)
+                    assertMsg "Approvers needs to be a member of the org" (elem approver org.members)
+                    assertMsg "Approver can not be the owner" (approver /= owner)
+                    -- assertMsg "Approver needs to be the member of the committee" (approver `elem` org.members)
+                    assertMsg "Already approved by this party"  (approver `notElem` approvedBy)
+                    assertMsg "Needs to have three approvers" (length approvedBy == 2)
+                    archive orgId
+                    orgId <- create org with
+                        members = owner :: org.members
+                    
+                    time <- getTime
+                    bikeId <- create BikeUsageRight with
+                        owner
+                        bikeId
+                        locked = False
+                        holder = owner
+                        from = time
+                        to = time
+                        fee
+                        bikeCoin = 0.0
+                        approvedBy = approver::approvedBy
+                        orgName = org.name
+                        orgOwner = bikeOrgOwner
+                        observers = org.observers ++ org.members
+                    return (bikeId,orgId)
+                    
+                    
+template BikeUsageRight with
+        owner: Party
+        bikeId: Text
+        locked: Bool
+        holder: Party
+        from: Time
+        to: Time
+        fee: Decimal
+        bikeCoin: Decimal
+        approvedBy: [Party]
+        orgName: Text
+        orgOwner: Party
+        observers: [Party]
+    where 
+        signatory owner,holder,orgOwner
+        observer observers
+    
+        choice TransferBikeUsage : ContractId BikeUsageTransfer with
+                party : Party
+                price : Decimal
+            controller holder
+                do
+                    -- assertMsg "Only the holder" (party == holder)
+                    create BikeUsageTransfer with
+                        oldHolder = holder
+                        newHolder = party
+                        issuer = orgOwner
+                        price
+                        bikeUsageRight = this
+                        bikeOwner = owner
+        choice InstantTransfer : ContractId BikeUsageRight with
+                party : Party
+            controller party
+                do
+                    create this with
+                        holder = party
+                
+
+template BikeUsageTransfer with
+        bikeOwner: Party
+        oldHolder: Party
+        newHolder: Party
+        issuer: Party
+        price: Decimal
+        bikeUsageRight: BikeUsageRight
+    where
+        signatory issuer,bikeOwner,oldHolder
+
+        controller newHolder can
+            AcceptBikeUsageTransfer : ContractId BikeUsageRight with
+                    accountCid: ContractId BikeAccount
+                do
+                    account <- fetch accountCid
+                    exercise accountCid TransferToContract with
+                        tokens = bikeUsageRight.fee
+                    create bikeUsageRight with
+                        holder = newHolder
+                        bikeCoin = bikeUsageRight.bikeCoin + bikeUsageRight.fee
+
+create_and_approve_bike_offering = scenario 
+    do
+        -- create committee members
+        committeeOwner <- getParty "CommitteeOwner"
+        bikeOwner1 <- getParty "BikeOwner1"
+        bikeOwner2 <- getParty "BikeOwner2"
+        bikeOwner3 <- getParty "BikeOwner3"
+
+        -- Create a committee this collects the bike owners
+        bikeOrg <- submit committeeOwner do
+            create BikeOrg with
+                owner = committeeOwner
+                members = [committeeOwner]
+                observers = [committeeOwner]
+                name = "BME Bikeorg"
+        -- Create a new party who is an offerer
+        offerer <- getParty "BikeOfferer"
+        -- add this party to the observers to be able to see the committee
+        bikeOrgId <- submit committeeOwner do
+            exercise bikeOrg AddObserver with
+                newObserver = offerer
+
+        -- add members to the committee
+        bikeOrgId <- submit committeeOwner do
+            exercise bikeOrgId AddMember with
+                newMember = bikeOwner1
+        bikeOrgId <- submit committeeOwner do
+            exercise bikeOrgId AddMember with
+                newMember = bikeOwner2
+        
+        -- create a bike offering
+        bikeOfferingId <- submit offerer do
+            exercise bikeOrgId Offer with
+                party = offerer
+                fee = 10.0
+                bikeId = "MYBIKEID"
+        
+        -- a committee member can approve the offering:
+        bikeOfferingId <- submit committeeOwner do
+            exercise bikeOfferingId Approve with
+                approver = committeeOwner
+
+        -- Offerer can not approve its own offer
+        submitMustFail offerer do
+            org <- fetch bikeOrgId
+            exercise bikeOfferingId Approve with
+                approver = offerer
+
+        -- bike owner can approve only once
+        submitMustFail committeeOwner do
+            exercise bikeOfferingId Approve with
+                approver = committeeOwner
+
+        bikeOfferingId <- submit bikeOwner1 do
+            exercise bikeOfferingId Approve with
+                approver = bikeOwner1
+
+        bikeOrgId <- submit committeeOwner do
+            exercise bikeOrgId AddMember with
+                newMember = bikeOwner3
+
+        (bikeTokenId,bikeOrgId)<-submit bikeOwner2 do
+            org <- fetch bikeOrgId
+            exercise bikeOfferingId FinalApprove with
+                approver = bikeOwner2
+
+        bikeTokenTransferId <- submit offerer do
+            exercise bikeTokenId TransferBikeUsage with
+                party = bikeOwner2
+                price = 0.0
+        
+
+        bank <- getParty "BikeCoinBank"
+
+        bikeOwner2WalletCid <- submit bank do
+            create BikeAccount with
+                owner = bikeOwner2
+                balance = 500.0
+                name = "BikeWallet"
+                issuer = bank
+                isBikeOwner = False
+
+        bikeTokenId <- submit bikeOwner2 do
+            exercise bikeTokenTransferId AcceptBikeUsageTransfer with
+                accountCid = bikeOwner2WalletCid
+
+        submit bikeOwner1 do
+            exercise bikeTokenId InstantTransfer with
+                party = bikeOwner1
+
+{-- MORE STRUCTURED TEST SCENARIOS--}     
+test_register_bike = scenario
+    do
+        -- create org and members
+        bme <- getParty "BME Bike sharing"
+        bowner1 <- getParty "Bike Owner1"
+        bowner2 <- getParty "Bike Owner2"
+        bowner3 <- getParty "Bike Owner3"
+        bofferer <- getParty "Bike offerer"
+
+        bmeOrgCid <- submit bme do
+            create BikeOrg with
+                owner = bme
+                members = [bowner1,bowner2,bowner3]
+                observers = [bofferer]
+                name = "BME Bike Sharing org"
+
+        -- create a bike offer - fee = 500.0
+        bikeOfferCid <- submit bofferer do
+            exercise bmeOrgCid Offer with
+                party = bofferer
+                fee = 500.0
+                bikeId = "MYLITTLEBIKE1"
+        {-- approve bike offering --}
+        -- owner can not approve
+        submitMustFail bofferer do
+            exercise bikeOfferCid Approve with
+                approver = bofferer
+        -- Bike owner (member of the bike org can approve)
+        bikeOfferCid <- submit bowner1 do
+            exercise bikeOfferCid Approve with
+                approver = bowner1
+        -- Bike owner can not approve in the name of another bike owner
+        submitMustFail bowner1 do
+            exercise bikeOfferCid Approve with
+                approver = bowner2
+        -- Bike owner can not approve the same offer twice
+        submitMustFail bowner1 do
+            exercise bikeOfferCid Approve with
+                approver = bowner1
+        -- Second member can not final approve but can approve
+        submitMustFail bowner2 do
+            exercise bikeOfferCid FinalApprove with
+                approver = bowner2
+
+        bikeOfferCid <- submit bowner2 do
+            exercise bikeOfferCid Approve with
+                approver = bowner2
+        -- third member can not approve, only final approve
+        submitMustFail bowner3 do
+            exercise bikeOfferCid Approve with
+                approver = bowner3
+
+        submit bowner3 do
+            exercise bikeOfferCid FinalApprove with
+                approver = bowner3
+
+        {-- end approve bike offering test --}
+
+
+test_transfer_token = scenario 
+    do
+        bme <- getParty "BME Bike sharing"
+        bme <- getParty "BME Bike sharing"
+        bowner1 <- getParty "Bike Owner1"
+        bowner2 <- getParty "Bike Owner2"
+        bowner3 <- getParty "Bike Owner3"
+        bofferer <- getParty "Bike offerer"
+
+        bmeOrgCid <- submit bme do
+            create BikeOrg with
+                owner = bme
+                members = [bowner1,bowner2,bowner3]
+                observers = [bofferer]
+                name = "BME Bike Sharing org"
+        
+        -- try create a token as bowner1
+        submitMustFail bowner1 do
+            time <- getTime
+            create BikeUsageRight with
+                owner = bowner1
+                bikeId = "RANDOM"
+                locked = False
+                holder = bowner1
+                from = time
+                to = time
+                fee = 500.0
+                bikeCoin = 100.0
+                approvedBy= [bowner2,bowner3,bowner1]
+                orgName = "BME Bike Sharing org"
+                orgOwner = bme
+                observers = [bowner1,bowner2,bowner3]
+        -- Org can create ORG BikeTokens
+        bikeUsageRight <- submit bme do
+            time <- getTime
+            org <- fetch bmeOrgCid
+            bikeUsageRightCid <- create BikeUsageRight with
+                owner = bme
+                bikeId = "RANDOM"
+                locked = False
+                holder = bme
+                from = time
+                to = time
+                fee = 500.0
+                bikeCoin = 100.0
+                approvedBy= [bowner2,bowner3,bowner1]
+                orgName = "BME Bike Sharing org"
+                orgOwner = bme
+                observers = org.members ++ org.observers
+            fetch bikeUsageRightCid
+        assertMsg "Token needs to have 100 bikeCoin" (bikeUsageRight.bikeCoin == 100.0)
+        {-- Test the token --}
+            
+
+        
+            
+        
+
+        
+
+
+                
+            
+
+        
+
+
+
+  
+        

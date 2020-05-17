@@ -1,0 +1,12 @@
+sdk-version: 1.0.1
+name: BikeSharing
+version: 1.0.0
+source: BikeSharing.daml
+scenario: 
+- BikeSharing:create_and_approve_bike_offering
+parties:
+- Alice
+- Bob
+dependencies:
+- daml-prim
+- daml-stdlib

@@ -61,3 +61,11 @@ function allowance(address _owner, address _spender) public view returns (uint25
 
 ### Initial plan
 ![alt](images/plan_v0.1.png)
+
+### System Architecture
+![alt](images/SystemArchitecture.png)
+
+#### BikeOrg
+Stores the bikeowners and users of the BikeSharing system.
+You can offer your bike to a Bike Org, if the members (bike owners) accept your request, you will be a member of the bike org. 
+
