@@ -206,11 +206,12 @@ template BikeUsageRequest with
         bikeOwner : Party
         accepter : Party
         requester : Party
-        issuer : Party --ennek mi is a szerepe?
+        issuer : Party --ennek mi is a szerepe? -- hogy itt feltétlen szükséges e abban nem vagyok biztos, magán a bikeusageright-on kell, mert ő a legfőbb kibocsátó, emiatt nem lehet hamisítani a UsageRight-ot
         price : Decimal
         bikeUsageRight : BikeUsageRight
     where
-        signatory issuer, bikeOwner, requester --bikeOwnernek ala kell irnia?
+        signatory issuer,requester --bikeOwnernek ala kell irnia? -- sztem nem
+        observer accepter
 
         controller accepter can
             AcceptRequest : ContractId BikeUsageRight
@@ -448,12 +449,19 @@ test_make_BikeUsageRequest_and_Accept = scenario
                 name = "BME Bike Sharing org"
 
         --create a bike account
-        account1Cid <- submit bowner1 do
+        bmeAccountCid <- submit bme do -- tegyuk fel, hogy most a bme hozta letre az accountokat
             create BikeAccount with 
-                owner = bowner1
-                balance = 0.0
+                owner = bme
+                balance = 500.0
                 name = "account1"
-                issuer = bowner1
+                issuer = bme
+                isBikeOwner = False
+        bikerequester1AccountCid <- submit bme do -- itt is, ezért ő az issuer (kb. mintha egy bank lenne)
+            create BikeAccount with 
+                owner = bikerequester1
+                balance = 500.0
+                name = "account2"
+                issuer = bme
                 isBikeOwner = False
         
         -- create a bike usage right
@@ -482,26 +490,27 @@ test_make_BikeUsageRequest_and_Accept = scenario
 
         --the first holder of the usage right is bme, who can accept the request
         --accept the bike usage request -> holder of usage right will be the requester
-        --bikeUsageRightCid <- submit bme do
-            --exercise AcceptRequest with 
-                --accountCid = account1Cid
+        bikeUsageRightCid <- submit bme do
+            exercise bikeUsageRequestCid AcceptRequest with 
+                accountCid = bmeAccountCid
 
-        --submitMustFail bikerequester1 do
-            --exercise bikeUsageRightCid MakeUsageRequest with
-                --requester = bikerequester1
-                --price = 150.0
+        submitMustFail bikerequester1 do
+            exercise bikeUsageRightCid MakeUsageRequest with
+                requester = bikerequester1
+                price = 150.0
 
         --then comes bikerequester2, who makes another request for the bike
-        submit bikerequester2 do
+        bikeUsageRequestCid <- submit bikerequester2 do
             exercise bikeUsageRightCid MakeUsageRequest with 
                 requester = bikerequester2
                 price = 120.0
             
         -- the second holder of the usage right is bikerequester1
         -- accept the bike usage request -> next holder of usage right will be bikerequester2
-        --bikeUsageRightCid <- submit bikerequester1 do
-            --exercise AcceptRequest with 
-                --accountCid = account1Cid
+        submit bikerequester1 do
+            exercise bikeUsageRequestCid AcceptRequest with 
+                accountCid = bikerequester1AccountCid
+        assertMsg "Hello" (True)
     
                 
             
