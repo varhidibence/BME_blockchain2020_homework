@@ -134,12 +134,29 @@ template BikeUsageRight with
                         price
                         bikeUsageRight = this
                         bikeOwner = owner
+                        
         choice InstantTransfer : ContractId BikeUsageRight with
                 party : Party
             controller party
                 do
                     create this with
                         holder = party
+
+        nonconsuming choice MakeUsageRequest : ContractId BikeUsageRequest with
+                party : Party
+                price : Decimal
+         controller party
+            do
+
+                create BikeUsageRequest with
+                    bikeOwner = owner
+                    currentHolder = holder
+                    requester = party
+                    issuer = orgOwner
+                    price
+                    bikeUsageRight = this
+                
+              
                 
 
 template BikeUsageTransfer with
@@ -162,6 +179,29 @@ template BikeUsageTransfer with
                     create bikeUsageRight with
                         holder = newHolder
                         bikeCoin = bikeUsageRight.bikeCoin + bikeUsageRight.fee
+
+template BikeUsageRequest
+  with
+    bikeOwner : Party
+    currentHolder : Party
+    requester : Party
+    issuer : Party
+    price : Decimal
+    bikeUsageRight : BikeUsageRight
+  where
+    signatory issuer, bikeOwner, requester --bikeOwnernek ala kell irnia?
+
+    controller currentHolder can
+      AcceptRequest : ContractId BikeUsageRight
+        with accountCid: ContractId BikeAccount
+        do
+            account <- fetch accountCid
+            exercise accountCid TransferToContract with
+                tokens = bikeUsageRight.fee
+            create bikeUsageRight with
+                    holder = requester
+                    bikeCoin = bikeUsageRight.bikeCoin + bikeUsageRight.fee
+                            
 
 create_and_approve_bike_offering = scenario 
     do
@@ -365,6 +405,66 @@ test_transfer_token = scenario
             fetch bikeUsageRightCid
         assertMsg "Token needs to have 100 bikeCoin" (bikeUsageRight.bikeCoin == 100.0)
         {-- Test the token --}
+
+test_make_BikeUsageRequest = scenario 
+    do
+        bme <- getParty "BME Bike sharing"
+        bowner1 <- getParty "Bike Owner1"
+        bowner2 <- getParty "Bike Owner2"
+        bowner3 <- getParty "Bike Owner3"
+        bofferer <- getParty "Bike offerer"
+        bikerequester <- getParty "Bike Requester"
+
+        bmeOrgCid <- submit bme do
+            create BikeOrg with
+                owner = bme
+                members = [bowner1,bowner2,bowner3]
+                observers = [bofferer,bikerequester]
+                name = "BME Bike Sharing org"
+
+        --create a bike account
+        account1Cid <- submit bowner1 do
+            create BikeAccount with 
+                owner = bowner1
+                balance = 0.00
+                name = "account1"
+                issuer = bowner1
+                isBikeOwner = False
+        
+        -- create a bike usage right
+        time <- getTime
+        bikeUsageRightCid <- submit bme do 
+            create BikeUsageRight with
+                owner = bme
+                bikeId = "RANDOM"
+                locked = False
+                holder = bme
+                from = time
+                to = time
+                fee = 500.0
+                bikeCoin = 100.0
+                approvedBy= [bowner2,bowner3,bowner1]
+                orgName = "BME Bike Sharing org"
+                orgOwner = bme
+                observers = [bowner1,bowner2,bowner3,bofferer,bikerequester]
+
+        --make a bike usage request
+        bikeUsageRequestCid <- submit bikerequester do
+            exercise bikeUsageRightCid MakeUsageRequest with
+                party = bikerequester
+                price = 150.00
+
+        -- the first holder of the usage right is bme
+        -- accept the bike usage request
+        bikeUsageRightCid <- submit bme do
+            exercise AcceptRequest with 
+                accountCid = account1Cid
+            
+                
+            
+        
+
+
             
 
         
