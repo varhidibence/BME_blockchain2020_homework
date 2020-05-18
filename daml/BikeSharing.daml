@@ -141,8 +141,12 @@ template BikeUsageRight with
                 party : Party
             controller party
                 do
+                    let threehours = hours 3
+                    let endPlus3Hours = addRelTime to threehours
+                    time <- getTime -- az aktualis ido kene, amikor a choice lefut
+                    assertMsg "cannot transfer because last usage was in 3 hours" (time < endPlus3Hours)
                     create this with
-                        holder = party
+                         holder = party
 
         nonconsuming choice MakeUsageRequest : ContractId BikeUsageRequest with
                 requester : Party
@@ -150,32 +154,14 @@ template BikeUsageRight with
          controller requester
             do
                 assertMsg "current holder could not make request" (requester /= holder)
-                let threehours = hours 3
-                let endPlus3Hours = addRelTime to threehours
-                time <- getTime -- az aktualis ido kene, amikor a choice lefut
-                -- if current time is after the last usage + 3 hours -> current holder can make a request
-                -- and the owner of bike usage right will be the accepter
-                if time > endPlus3Hours 
-                  then 
-                    create BikeUsageRequest with
-                        bikeOwner = owner
-                        accepter = owner
-                        requester = requester
-                        issuer = orgOwner
-                        price
-                        bikeUsageRight = this
-                  else 
-                        create BikeUsageRequest with
-                        bikeOwner = owner
-                        accepter = holder
-                        requester = requester
-                        issuer = orgOwner
-                        price
-                        bikeUsageRight = this
-                
-                
-              
-                
+                create BikeUsageRequest with
+                    bikeOwner = owner
+                    accepter = holder
+                    requester = requester
+                    issuer = orgOwner
+                    price
+                    bikeUsageRight = this
+                 
 
 template BikeUsageTransfer with
         bikeOwner: Party
