@@ -1,5 +1,6 @@
 module BikeSharing where
 import Token
+import DA.Time
 {-
 -}
 type OrgKey = (Party,Text)
@@ -110,8 +111,8 @@ template BikeUsageRight with
         bikeId: Text
         locked: Bool
         holder: Party
-        from: Time
-        to: Time
+        from: Time  -- rename to start?
+        to: Time    -- rename to end?
         fee: Decimal
         bikeCoin: Decimal
         approvedBy: [Party]
@@ -149,13 +150,29 @@ template BikeUsageRight with
          controller requester
             do
                 assertMsg "current holder could not make request" (requester /= holder)
-                create BikeUsageRequest with
-                    bikeOwner = owner
-                    currentHolder = holder
-                    requester = requester
-                    issuer = orgOwner
-                    price
-                    bikeUsageRight = this
+                let threehours = hours 3
+                let endPlus3Hours = addRelTime to threehours
+                time <- getTime -- az aktualis ido kene, amikor a choice lefut
+                -- if current time is after the last usage + 3 hours -> current holder can make a request
+                -- and the owner of bike usage right will be the accepter
+                if time > endPlus3Hours 
+                  then 
+                    create BikeUsageRequest with
+                        bikeOwner = owner
+                        accepter = owner
+                        requester = requester
+                        issuer = orgOwner
+                        price
+                        bikeUsageRight = this
+                  else 
+                        create BikeUsageRequest with
+                        bikeOwner = owner
+                        accepter = holder
+                        requester = requester
+                        issuer = orgOwner
+                        price
+                        bikeUsageRight = this
+                
                 
               
                 
@@ -175,15 +192,19 @@ template BikeUsageTransfer with
                     accountCid: ContractId BikeAccount
                 do
                     account <- fetch accountCid
+                    time <- getTime
+                    let onehour = hours 1 
                     exercise accountCid TransferToContract with
                         tokens = bikeUsageRight.fee
                     create bikeUsageRight with
                         holder = newHolder
                         bikeCoin = bikeUsageRight.bikeCoin + bikeUsageRight.fee
+                        from = time
+                        to = addRelTime time onehour
 
 template BikeUsageRequest with
         bikeOwner : Party
-        currentHolder : Party
+        accepter : Party
         requester : Party
         issuer : Party --ennek mi is a szerepe?
         price : Decimal
@@ -191,16 +212,20 @@ template BikeUsageRequest with
     where
         signatory issuer, bikeOwner, requester --bikeOwnernek ala kell irnia?
 
-        controller currentHolder can
+        controller accepter can
             AcceptRequest : ContractId BikeUsageRight
                 with accountCid: ContractId BikeAccount
                 do
                     account <- fetch accountCid
+                    time <- getTime
+                    let onehour = hours 1 
                     exercise accountCid TransferToContract with
                         tokens = bikeUsageRight.fee
                     create bikeUsageRight with
                         holder = requester
                         bikeCoin = bikeUsageRight.bikeCoin + bikeUsageRight.fee
+                        from = time
+                        to = addRelTime time onehour
                             
 
 create_and_approve_bike_offering = scenario 
@@ -433,6 +458,7 @@ test_make_BikeUsageRequest_and_Accept = scenario
         
         -- create a bike usage right
         time <- getTime 
+        let hour = hours 1
         bikeUsageRightCid <- submit bme do 
             create BikeUsageRight with
                 owner = bme
@@ -440,7 +466,7 @@ test_make_BikeUsageRequest_and_Accept = scenario
                 locked = False
                 holder = bme
                 from = time
-                to = time
+                to = addRelTime time hour
                 fee = 500.0
                 bikeCoin = 100.0
                 approvedBy= [bowner2,bowner3,bowner1]
