@@ -1,9 +1,107 @@
 module BikeSharing where
-import Token
 import DA.Time
 {-
 -}
 type OrgKey = (Party,Text)
+
+{-
+Function, returns whether a party is member of a bikeOrg
+@param
+    party: Party - this party will be tested
+    bikeOrgName: Text - name of the bikeOrg
+    bikeOrgOwner: Party - owner of the bikeOrg
+@return
+    Update Bool
+@Usage
+    isBikeOwner <- partyIsBikeOwner [parameters]
+-}
+partyIsBikeOwner: Party->Text->Party->Update Bool
+partyIsBikeOwner party bikeOrgName bikeOrgOwner = do
+    (orgId,org) <- fetchByKey @BikeOrg (bikeOrgOwner,bikeOrgName)
+    if elem party org.members then
+        return True
+    else
+        return False
+{-
+Function, a bit complex..
+Its responsibility to handle the necessary transactions during transfering a BikeUsageRight (instant or not)
+
+@param
+    accountCid: BikeAccount - accountCid to transfer from
+    bikeOwner: Party
+    oldHolder: Party
+    newHolder: Party
+    price: Decimal
+    bikeUsageRight: BikeUsageRight
+
+@return
+    Update (Decimal,ContractId BikeAccount,ContractId BikeUsageRight)
+
+@usage
+    (transferedToContract,bikeAccountCid,bikeUsageRightCid) <- handleBikeUsageTransfer [parameters]
+-}
+handleBikeUsageTransfer: ContractId BikeAccount->Party->Party->Party->Decimal->BikeUsageRight->Update (Decimal,ContractId BikeAccount,ContractId BikeUsageRight)
+handleBikeUsageTransfer accountCid bikeOwner oldHolder newHolder price bikeUsageRight = do
+                        account <- fetch accountCid
+                        time <- getTime
+                        let onehour = hours 1
+                        newHolderIsOwner <- partyIsBikeOwner newHolder bikeUsageRight.orgName bikeUsageRight.orgOwner
+                        assertMsg "Can not sell to bike owner" (newHolderIsOwner && price == 0.0 || not newHolderIsOwner)
+                        oldHolderIsOwner <- partyIsBikeOwner oldHolder bikeUsageRight.orgName bikeUsageRight.orgOwner
+                        assertMsg "Bike owner can not sell" (oldHolderIsOwner && price == 0.0 || not oldHolderIsOwner)
+                        if newHolderIsOwner then --
+                            do
+                                bikeUsageRightCid <- create bikeUsageRight with
+                                            holder = newHolder
+                                            bikeCoin = bikeUsageRight.bikeCoin
+                                            from = time
+                                            to = addRelTime time onehour
+                                            locked = True
+                                return (0.0,accountCid,bikeUsageRightCid)
+                        else
+                            if oldHolderIsOwner then -- transfer the fee to the owner (no pay to contract)
+                                do
+                                    assertMsg "Not enough coin in the account" (account.balance >= bikeUsageRight.fee)
+                                    (tokenTransferCid,bikeAccountCid) <- exercise accountCid Transfer with
+                                        tokens = bikeUsageRight.fee
+                                        to = oldHolder
+                                    let transfered = 0.0
+                                    bikeUsageRightCid <- create bikeUsageRight with
+                                        holder = newHolder
+                                        bikeCoin = bikeUsageRight.bikeCoin + transfered
+                                        from = time
+                                        to = addRelTime time onehour
+                                        locked = True
+                                    return (transfered,bikeAccountCid,bikeUsageRightCid)
+                            else
+                                if price == 0.0
+                                    then -- transfer the fee only to the contract
+                                        do
+                                            assertMsg "Not enough coin in the account" (account.balance >= bikeUsageRight.fee)
+                                            bikeAccountCid <- exercise accountCid TransferToContract with
+                                                tokens = bikeUsageRight.fee
+                                            bikeUsageRightCid <- create bikeUsageRight with
+                                                holder = newHolder
+                                                bikeCoin = bikeUsageRight.bikeCoin + bikeUsageRight.fee
+                                                from = time
+                                                to = addRelTime time onehour
+                                                locked = True
+                                            return (bikeUsageRight.fee,bikeAccountCid,bikeUsageRightCid)
+                                    else -- transfer to the oldHolder the price and the fee to the contract
+                                        do
+                                        assertMsg "Not enough coin in the account" (account.balance >= bikeUsageRight.fee+price)
+                                        (tokenTransferCid,bikeAccountCid) <- exercise accountCid Transfer with
+                                            tokens = price
+                                            to = oldHolder
+                                        bikeAccountCid <- exercise bikeAccountCid TransferToContract with
+                                            tokens = bikeUsageRight.fee
+                                        bikeUsageRightCid <- create bikeUsageRight with
+                                            holder = newHolder
+                                            bikeCoin = bikeUsageRight.bikeCoin + bikeUsageRight.fee
+                                            from = time
+                                            to = addRelTime time onehour
+                                            locked = True
+                                        return (bikeUsageRight.fee,bikeAccountCid,bikeUsageRightCid)
 
 template BikeOrg with
         owner: Party
@@ -45,7 +143,63 @@ template BikeOrg with
                         bikeOrgOwner = this.owner
                         bikeOwners = this.members
                         bikeId
+template BikeAccount with
+        owner: Party
+        balance: Decimal
+        name: Text
+        issuer: Party -- BikeOrgOwner
+        isBikeOwner: Bool
+        bikeOrgName: Text
+    where
+        signatory issuer
+        observer owner
+        ensure balance >= 0.0
+        controller owner can
+            Transfer: (ContractId TokenTransfer,ContractId BikeAccount) with
+                    tokens: Decimal
+                    to: Party
+                do 
+                    assertMsg "Tokens need to be less or equal then balance" (balance >=tokens)
+                    -- toAccount <- fetch to
+                    bikeAccountCid <- create this with
+                        balance = balance - tokens
+                    tokenTransferCid <- create TokenTransfer with 
+                        tokens = tokens
+                        fromAccount = self
+                        issuer = this.issuer
+                        from = owner
+                        to = to
+                    return (tokenTransferCid,bikeAccountCid)
+            TransferToContract: ContractId BikeAccount with
+                    tokens: Decimal
+                do 
+                    assertMsg "Tokens need to be less or equal then balance" (balance >=tokens)
+                    create this with
+                        balance = balance - tokens
+        controller issuer,owner can
+            UpdateAccount: ContractId BikeAccount do
+                (orgId,org) <- fetchByKey @BikeOrg (issuer,bikeOrgName)
+                let isBikeOwner = if elem owner org.members then True else False
+                create this with
+                    isBikeOwner = isBikeOwner
 
+template TokenTransfer with
+        tokens: Decimal
+        fromAccount: ContractId BikeAccount
+        issuer: Party
+        to: Party
+        from: Party
+    where
+        signatory from,issuer
+
+        controller to can
+            Accept: ContractId BikeAccount with
+                    accountCid: ContractId BikeAccount
+                do
+                    account <- fetch accountCid
+                    archive accountCid
+                    create account with
+                        balance = account.balance + tokens
 
 template BikeOffering with
         owner: Party
@@ -137,16 +291,24 @@ template BikeUsageRight with
                         bikeUsageRight = this
                         bikeOwner = owner
                         
-        choice InstantTransfer : ContractId BikeUsageRight with
+        choice InstantTransfer : (ContractId BikeUsageRight,ContractId BikeAccount) with
                 party : Party
+                accountCid : ContractId BikeAccount
             controller party
                 do
                     let threehours = hours 3
                     let endPlus3Hours = addRelTime to threehours
                     time <- getTime -- az aktualis ido kene, amikor a choice lefut
-                    assertMsg "cannot transfer because last usage was in 3 hours" (time < endPlus3Hours)
-                    create this with
-                         holder = party
+                    assertMsg "cannot transfer because last usage was in 3 hours or it is not free" ((time >= endPlus3Hours && locked) || not locked)
+                    -- InstantTransfer
+                    (transferedToContract,bikeAccountCid,bikeUsageRightCid) <- handleBikeUsageTransfer
+                        accountCid
+                        owner
+                        holder
+                        party
+                        0.0
+                        this
+                    return (bikeUsageRightCid,bikeAccountCid)
 
         nonconsuming choice MakeUsageRequest : ContractId BikeUsageRequest with
                 requester : Party
@@ -163,6 +325,25 @@ template BikeUsageRight with
                         issuer = orgOwner
                         price
                         bikeUsageRightCid = self
+        choice Lock : (ContractId BikeUsageRight,ContractId ClosedBikeUsage) with
+            controller holder
+                do 
+                    -- lock the BikeUsageRight, create a ClosedBikeUsage
+                    bikeUsageRightCid <- create this with
+                        bikeCoin = 0.0
+                        locked = False
+                        holder = owner
+                    (orgId,org) <- fetchByKey @BikeOrg (orgOwner,orgName)
+                    closedBikeUsageCid <- create ClosedBikeUsage with
+                        bikeCoin = this.bikeCoin
+                        bikeOwners = org.members
+                        bikeOrgOwner = orgOwner
+                        bikeOrgName = orgName
+                        transferOut = 0
+                        noTransferOut = 0
+                    return (bikeUsageRightCid,closedBikeUsageCid)
+                    
+                    
 
         --for each additional hour of unlocking, they must pay some fee into the contract      
         choice ProLongForAnHour : ContractId BikeUsageRight with
@@ -191,19 +372,20 @@ template BikeUsageTransfer with
         signatory issuer,bikeOwner,oldHolder
 
         controller newHolder can
-            AcceptBikeUsageTransfer : ContractId BikeUsageRight with
+            AcceptBikeUsageTransfer : (ContractId BikeUsageRight,ContractId BikeAccount) with
                     accountCid: ContractId BikeAccount
                 do
                     account <- fetch accountCid
                     time <- getTime
-                    let onehour = hours 1 
-                    exercise accountCid TransferToContract with
-                        tokens = bikeUsageRight.fee
-                    create bikeUsageRight with
-                        holder = newHolder
-                        bikeCoin = bikeUsageRight.bikeCoin + bikeUsageRight.fee
-                        from = time
-                        to = addRelTime time onehour
+                    let onehour = hours 1
+                    (transferedToContract,bikeAccountCid,bikeUsageRightCid) <- handleBikeUsageTransfer
+                        accountCid
+                        bikeOwner
+                        oldHolder
+                        newHolder
+                        price
+                        bikeUsageRight 
+                    return (bikeUsageRightCid,bikeAccountCid)
 
 template BikeUsageRequest with
         bikeOwner : Party
@@ -218,23 +400,79 @@ template BikeUsageRequest with
         observer accepter
 
         controller accepter can
-            AcceptRequest : ContractId BikeUsageRight
-                --with accountCid: ContractId BikeAccount
+            AcceptRequest : ContractId BikeUsageTransfer
+                    --with accountCid: ContractId BikeAccount
                 do
                     --account <- fetch accountCid
                     bikeUsageRight <- fetch bikeUsageRightCid
                     time <- getTime
                     let onehour = hours 1 
-                    exercise requesterAccountId TransferToContract with
-                        tokens = price
                     archive bikeUsageRightCid
-                    create bikeUsageRight with
-                        holder = requester
-                        bikeCoin = bikeUsageRight.bikeCoin + price
-                        from = time
-                        to = addRelTime time onehour
-                            
+                    create BikeUsageTransfer with
+                        oldHolder = accepter
+                        newHolder = requester
+                        issuer = issuer
+                        price
+                        bikeUsageRight = bikeUsageRight
+                        bikeOwner = bikeUsageRight.owner                         
 
+template ClosedBikeUsage -- TODO ha nem tag hozza letre, akkor is latja (gondolom mert a Lock-nal o hozza letre)
+    with
+        bikeCoin: Decimal
+        bikeOwners: [Party]
+        bikeOrgOwner:Party
+        bikeOrgName: Text
+        transferOut: Int
+        noTransferOut: Int
+    where
+        signatory bikeOrgOwner
+        observer bikeOwners
+    
+
+test_the_bike_token = scenario
+    do
+        bme <- getParty "CommitteeOwner"
+        bikeOwner1 <- getParty "BikeOwner1"
+        bikeOwner2 <- getParty "BikeOwner2"
+        bikeOwner3 <- getParty "BikeOwner3"
+
+        -- Create a committee this collects the bike owners
+        bikeOrg <- submit bme do
+            create BikeOrg with
+                owner = bme
+                members = [bme]
+                observers = [bme]
+                name = "BME Bikeorg"
+
+        (bikeOwner1AccountCid,bikeOwner2AccountCid) <- submit bme do
+            bikeOwner1AccountCid <- create BikeAccount with
+                owner = bikeOwner1
+                balance = 500.0
+                name = "BikeWallet"
+                issuer = bme
+                isBikeOwner = False
+                bikeOrgName = "BME Bikeorg"
+            bikeOwner2AccountCid <- create BikeAccount with
+                owner = bikeOwner2
+                balance = 500.0
+                name = "BikeWallet"
+                issuer = bme
+                isBikeOwner = False
+                bikeOrgName = "BME Bikeorg"
+            return (bikeOwner1AccountCid,bikeOwner2AccountCid)
+
+        (tokenTransferCid,bikeAccountCid) <- submit bikeOwner1 do
+            exercise bikeOwner1AccountCid Transfer with
+                to = bikeOwner2
+                tokens = 200.0
+
+        submit bikeOwner2 do
+            exercise tokenTransferCid Accept with
+                accountCid = bikeOwner2AccountCid
+
+        assertMsg "Hello" (True)
+
+{-- STRUCTURED TEST SCENARIOS--} 
 create_and_approve_bike_offering = scenario 
     do
         -- create committee members
@@ -300,32 +538,14 @@ create_and_approve_bike_offering = scenario
             org <- fetch bikeOrgId
             exercise bikeOfferingId FinalApprove with
                 approver = bikeOwner2
-
-        bikeTokenTransferId <- submit offerer do
-            exercise bikeTokenId TransferBikeUsage with
-                party = bikeOwner2
-                price = 0.0
         
+        submit offerer do
+            isOwner <- partyIsBikeOwner offerer "BME Bikeorg" committeeOwner
+            assertMsg 
+                "bofferer has to be a member of the org (aca a bike owner)" 
+                (isOwner)
 
-        bank <- getParty "BikeCoinBank"
-
-        bikeOwner2WalletCid <- submit bank do
-            create BikeAccount with
-                owner = bikeOwner2
-                balance = 500.0
-                name = "BikeWallet"
-                issuer = bank
-                isBikeOwner = False
-
-        bikeTokenId <- submit bikeOwner2 do
-            exercise bikeTokenTransferId AcceptBikeUsageTransfer with
-                accountCid = bikeOwner2WalletCid
-
-        submit bikeOwner1 do
-            exercise bikeTokenId InstantTransfer with
-                party = bikeOwner1
-
-{-- MORE STRUCTURED TEST SCENARIOS--}     
+    
 test_register_bike = scenario
     do
         -- create org and members
@@ -382,12 +602,168 @@ test_register_bike = scenario
             exercise bikeOfferCid FinalApprove with
                 approver = bowner3
 
+        submit bofferer do
+            isBikeOwner <- partyIsBikeOwner bofferer "BME Bike Sharing org" bme
+            assertMsg "Bofferer has to be a bike owner" (isBikeOwner)
         {-- end approve bike offering test --}
 
+test_instanttranfer_bikeusageright = scenario do
+    bme <- getParty "BME Bike sharing"
+    bowner1 <- getParty "Bike Owner1"
+    bowner2 <- getParty "Bike Owner2"
+    bowner3 <- getParty "Bike Owner3"
+    bnotOwner <- getParty "Bike offerer"
 
-test_transfer_token = scenario 
+    bmeOrgCid <- submit bme do
+        create BikeOrg with
+            owner = bme
+            members = [bowner1,bowner2,bowner3]
+            observers = [bnotOwner]
+            name = "BME Bike Sharing org"
+
+    bikeUsageRightCid <- submit bme do
+        time <- getTime
+        org <- fetch bmeOrgCid
+        create BikeUsageRight with
+            owner = bme
+            bikeId = "RANDOM"
+            locked = False
+            holder = bme
+            from = time
+            to = time
+            fee = 500.0
+            bikeCoin =  0.0
+            approvedBy= [bowner2,bowner3,bowner1]
+            orgName = "BME Bike Sharing org"
+            orgOwner = bme
+            observers = org.members ++ org.observers
+
+    --Create Accounts
+    (bmeAccountCid ,bowner1AccountCid,bnotOwnerAccountCid)<- submit bme do -- tegyuk fel, hogy most a bme hozta letre az accountokat
+        bmeAccountCid<-create BikeAccount with 
+            owner = bme
+            balance = 1500.0
+            name = "bme"
+            issuer = bme
+            isBikeOwner = False
+            bikeOrgName = "BME Bike Sharing org"
+        bowner1AccountCid<-create BikeAccount with 
+            owner = bowner1
+            balance = 1500.0
+            name = "bowner1"
+            issuer = bme
+            isBikeOwner = False
+            bikeOrgName = "BME Bike Sharing org"
+        bnotOwnerAccountCid<-create BikeAccount with 
+            owner = bnotOwner
+            balance = 1500.0
+            name = "bnotOwner1"
+            issuer = bme
+            isBikeOwner = False
+            bikeOrgName = "BME Bike Sharing org"
+        return (bmeAccountCid ,bowner1AccountCid,bnotOwnerAccountCid)
+
+    -- Instant transfer if free (bikeOwner1)
+    bikeUsageRightCid <- submit bowner1 do
+        (bikeUsageRight,bowner1AccountCid) <- exercise bikeUsageRightCid InstantTransfer with
+            party = bowner1
+            accountCid = bowner1AccountCid
+        -- bowner1 is a bike owner, so it does not need to pay for The InstantTransfer
+        account <- fetch bowner1AccountCid
+        assertMsg "Bike Owner does not need to pay for instant transfer" (account.balance == 1500.0)
+        return bikeUsageRight
+    -- no instantTransfer if locked less then 3 hours
+    submitMustFail bnotOwner do
+        exercise bikeUsageRightCid InstantTransfer with
+            party = bnotOwner
+            accountCid = bnotOwnerAccountCid
+    pass (hours 4)
+    submit bnotOwner do
+        (bikeUsageRightCid,bnotOwnerAccountCid)<-exercise bikeUsageRightCid InstantTransfer with
+            party = bnotOwner
+            accountCid = bnotOwnerAccountCid
+        account <- fetch bnotOwnerAccountCid
+        bikeUsageRight <- fetch bikeUsageRightCid
+        assertMsg "Non owner must pay" (account.balance == 1500.0 - bikeUsageRight.fee)
+        assertMsg "oldHolder is a bike owner so bikeUsageRight bikeCoin wont change" (bikeUsageRight.bikeCoin == 0.0) 
+        -- TODO jo lenne ellenorizni hogy letrejott-e a TokenTransfer, de sajnos azt nem tudom hogyan kell lekerdezni, ha a fuggvenyem nem adja vissza
+    assertMsg "Hello" (True)
+
+
+test_lock_bikeusageright = scenario do
+    bme <- getParty "BME Bike sharing"
+    bowner1 <- getParty "Bike Owner1"
+    bowner2 <- getParty "Bike Owner2"
+    bowner3 <- getParty "Bike Owner3"
+    bnotOwner <- getParty "Bike offerer"
+
+    bmeOrgCid <- submit bme do
+        create BikeOrg with
+            owner = bme
+            members = [bowner1,bowner2,bowner3,bme]
+            observers = [bnotOwner]
+            name = "BME Bike Sharing org"
+
+    bikeUsageRightCid <- submit bme do
+        time <- getTime
+        org <- fetch bmeOrgCid
+        create BikeUsageRight with
+            owner = bme
+            bikeId = "RANDOM"
+            locked = False
+            holder = bme
+            from = time
+            to = time
+            fee = 500.0
+            bikeCoin =  1000.0
+            approvedBy= [bowner2,bowner3,bowner1]
+            orgName = "BME Bike Sharing org"
+            orgOwner = bme
+            observers = org.members ++ org.observers
+
+    --Create Accounts
+    (bmeAccountCid ,bnotOwnerAccountCid)<- submit bme do -- tegyuk fel, hogy most a bme hozta letre az accountokat
+        bmeAccountCid<-create BikeAccount with 
+            owner = bme
+            balance = 1500.0
+            name = "bme"
+            issuer = bme
+            isBikeOwner = False
+            bikeOrgName = "BME Bike Sharing org"
+        bnotOwnerAccountCid<-create BikeAccount with 
+            owner = bnotOwner
+            balance = 1500.0
+            name = "bnotOwner1"
+            issuer = bme
+            isBikeOwner = False
+            bikeOrgName = "BME Bike Sharing org"
+        return (bmeAccountCid,bnotOwnerAccountCid)
+
+    (bikeUsageRightCid,bnotOwnerAccountCid)<-submit bnotOwner do
+        exercise bikeUsageRightCid InstantTransfer with
+            party = bnotOwner
+            accountCid = bnotOwnerAccountCid
+
+    (bikeUsageRightCid,closedBikeUsageCid,oldBikeUsageRight) <- submit bnotOwner do
+        oldBikeUsageRight <- fetch bikeUsageRightCid
+        (bikeUsageRightCid,closedBikeUsageCid) <- exercise bikeUsageRightCid Lock
+        return (bikeUsageRightCid,closedBikeUsageCid,oldBikeUsageRight)
+    
+    submit bowner1 do
+        bikeUsageRight <- fetch bikeUsageRightCid
+        closedBikeUsage <- fetch closedBikeUsageCid
+        assertMsg 
+            "CloseBikeUsageRight bikeCoin has to be the same as in the oldBikeUsageRight"
+            (closedBikeUsage.bikeCoin == oldBikeUsageRight.bikeCoin)
+        assertMsg "New bike usage right bikeCoin needs to be 0.0" (bikeUsageRight.bikeCoin == 0.0)
+        assertMsg "New bike usage right bikeCoin needs to be unlocked" (not bikeUsageRight.locked)
+
+    
+    assertMsg "Hello" (True)
+
+
+test_transfer_bikeusageright = scenario 
     do
-        bme <- getParty "BME Bike sharing"
         bme <- getParty "BME Bike sharing"
         bowner1 <- getParty "Bike Owner1"
         bowner2 <- getParty "Bike Owner2"
@@ -462,6 +838,7 @@ test_make_BikeUsageRequest_and_Accept = scenario
                 name = "account1"
                 issuer = bme
                 isBikeOwner = False
+                bikeOrgName = "BME Bike Sharing org"
         bikerequester1AccountCid <- submit bme do -- itt is, ezért ő az issuer (kb. mintha egy bank lenne)
             create BikeAccount with 
                 owner = bikerequester1
@@ -469,6 +846,7 @@ test_make_BikeUsageRequest_and_Accept = scenario
                 name = "account2"
                 issuer = bme
                 isBikeOwner = False
+                bikeOrgName = "BME Bike Sharing org"
 
         bikerequester2AccountCid <- submit bme do -- itt is, ezért ő az issuer (kb. mintha egy bank lenne)
             create BikeAccount with 
@@ -477,6 +855,7 @@ test_make_BikeUsageRequest_and_Accept = scenario
                 name = "account3"
                 issuer = bme
                 isBikeOwner = False
+                bikeOrgName = "BME Bike Sharing org"
         
         -- create a bike usage right
         time <- getTime 
@@ -501,12 +880,17 @@ test_make_BikeUsageRequest_and_Accept = scenario
             exercise bikeUsageRightCid MakeUsageRequest with
                 requester = bikerequester1
                 requesteraccountId = bikerequester1AccountCid
-                price = 150.0
+                price = 0.0
 
         --the first holder of the usage right is bme, who can accept the request
         --accept the bike usage request -> holder of usage right will be the requester
-        bikeUsageRightCid <- submit bme do
+        bikeUsageRightTransferCid <- submit bme do
             exercise bikeUsageRequestCid AcceptRequest
+
+        --bikerequester1 accepts the transfer
+        (bikeUsageRightCid,bikerequester1AccountCid) <- submit bikerequester1 do
+            exercise bikeUsageRightTransferCid AcceptBikeUsageTransfer with
+                accountCid = bikerequester1AccountCid
 
         --current holder of the usage cannot make request
         submitMustFail bikerequester1 do
@@ -523,32 +907,14 @@ test_make_BikeUsageRequest_and_Accept = scenario
                 price = 120.0
             
         -- the second holder of the usage right is bikerequester1
-        -- accept the bike usage request -> next holder of usage right will be bikerequester2
-        bikeUsageRightCid <- submit bikerequester1 do
+        -- accept the bike usage request -> bikeUsageTransfer will be created
+        bikeUsageRightTransferCid <- submit bikerequester1 do
             exercise bikeUsageRequestCid AcceptRequest
+
+        -- bikerequester2 accepts the transfer
+        bikeUsageRigthCid <- submit bikerequester2 do
+            exercise bikeUsageRightTransferCid AcceptBikeUsageTransfer with
+                accountCid = bikerequester2AccountCid
 
         assertMsg "Hello" (True)
     
-                
-            
-        
-
-
-            
-
-        
-            
-        
-
-        
-
-
-                
-            
-
-        
-
-
-
-  
-        
