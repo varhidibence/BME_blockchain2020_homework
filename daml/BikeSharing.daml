@@ -150,18 +150,35 @@ template BikeUsageRight with
 
         nonconsuming choice MakeUsageRequest : ContractId BikeUsageRequest with
                 requester : Party
+                requesteraccountId : ContractId BikeAccount
                 price : Decimal
-         controller requester
-            do
-                assertMsg "current holder could not make request" (requester /= holder)
-                create BikeUsageRequest with
-                    bikeOwner = owner
-                    accepter = holder
-                    requester = requester
-                    issuer = orgOwner
-                    price
-                    bikeUsageRight = this
-                 
+            controller requester
+                do
+                    assertMsg "current holder of the usage could not make request on own" (requester /= holder) 
+                    create BikeUsageRequest with
+                        bikeOwner = owner
+                        accepter = holder
+                        requester = requester
+                        requesterAccountId = requesteraccountId
+                        issuer = orgOwner
+                        price
+                        bikeUsageRightCid = self
+
+        --for each additional hour of unlocking, they must pay some fee into the contract      
+        choice ProLongForAnHour : ContractId BikeUsageRight with
+                prolonger : Party
+                prolongerAccountId : ContractId BikeAccount
+            controller prolonger
+                do
+                    time <- getTime
+                    let onehour = hours 1 
+                    exercise prolongerAccountId TransferToContract with
+                        tokens = fee
+                    create this with
+                        holder = prolonger
+                        bikeCoin = bikeCoin + fee
+                        from = time
+                        to = addRelTime time onehour
 
 template BikeUsageTransfer with
         bikeOwner: Party
@@ -192,25 +209,28 @@ template BikeUsageRequest with
         bikeOwner : Party
         accepter : Party
         requester : Party
+        requesterAccountId : ContractId BikeAccount
         issuer : Party --ennek mi is a szerepe? -- hogy itt feltétlen szükséges e abban nem vagyok biztos, magán a bikeusageright-on kell, mert ő a legfőbb kibocsátó, emiatt nem lehet hamisítani a UsageRight-ot
         price : Decimal
-        bikeUsageRight : BikeUsageRight
+        bikeUsageRightCid : ContractId BikeUsageRight
     where
         signatory issuer,requester --bikeOwnernek ala kell irnia? -- sztem nem
         observer accepter
 
         controller accepter can
             AcceptRequest : ContractId BikeUsageRight
-                with accountCid: ContractId BikeAccount
+                --with accountCid: ContractId BikeAccount
                 do
-                    account <- fetch accountCid
+                    --account <- fetch accountCid
+                    bikeUsageRight <- fetch bikeUsageRightCid
                     time <- getTime
                     let onehour = hours 1 
-                    exercise accountCid TransferToContract with
-                        tokens = bikeUsageRight.fee
+                    exercise requesterAccountId TransferToContract with
+                        tokens = price
+                    archive bikeUsageRightCid
                     create bikeUsageRight with
                         holder = requester
-                        bikeCoin = bikeUsageRight.bikeCoin + bikeUsageRight.fee
+                        bikeCoin = bikeUsageRight.bikeCoin + price
                         from = time
                         to = addRelTime time onehour
                             
@@ -438,15 +458,23 @@ test_make_BikeUsageRequest_and_Accept = scenario
         bmeAccountCid <- submit bme do -- tegyuk fel, hogy most a bme hozta letre az accountokat
             create BikeAccount with 
                 owner = bme
-                balance = 500.0
+                balance = 1500.0
                 name = "account1"
                 issuer = bme
                 isBikeOwner = False
         bikerequester1AccountCid <- submit bme do -- itt is, ezért ő az issuer (kb. mintha egy bank lenne)
             create BikeAccount with 
                 owner = bikerequester1
-                balance = 500.0
+                balance = 1500.0
                 name = "account2"
+                issuer = bme
+                isBikeOwner = False
+
+        bikerequester2AccountCid <- submit bme do -- itt is, ezért ő az issuer (kb. mintha egy bank lenne)
+            create BikeAccount with 
+                owner = bikerequester2
+                balance = 1500.0
+                name = "account3"
                 issuer = bme
                 isBikeOwner = False
         
@@ -472,30 +500,33 @@ test_make_BikeUsageRequest_and_Accept = scenario
         bikeUsageRequestCid <- submit bikerequester1 do
             exercise bikeUsageRightCid MakeUsageRequest with
                 requester = bikerequester1
+                requesteraccountId = bikerequester1AccountCid
                 price = 150.0
 
         --the first holder of the usage right is bme, who can accept the request
         --accept the bike usage request -> holder of usage right will be the requester
         bikeUsageRightCid <- submit bme do
-            exercise bikeUsageRequestCid AcceptRequest with 
-                accountCid = bmeAccountCid
+            exercise bikeUsageRequestCid AcceptRequest
 
+        --current holder of the usage cannot make request
         submitMustFail bikerequester1 do
             exercise bikeUsageRightCid MakeUsageRequest with
                 requester = bikerequester1
+                requesteraccountId = bikerequester1AccountCid
                 price = 150.0
 
         --then comes bikerequester2, who makes another request for the bike
         bikeUsageRequestCid <- submit bikerequester2 do
             exercise bikeUsageRightCid MakeUsageRequest with 
                 requester = bikerequester2
+                requesteraccountId = bikerequester2AccountCid
                 price = 120.0
             
         -- the second holder of the usage right is bikerequester1
         -- accept the bike usage request -> next holder of usage right will be bikerequester2
-        submit bikerequester1 do
-            exercise bikeUsageRequestCid AcceptRequest with 
-                accountCid = bikerequester1AccountCid
+        bikeUsageRightCid <- submit bikerequester1 do
+            exercise bikeUsageRequestCid AcceptRequest
+
         assertMsg "Hello" (True)
     
                 
