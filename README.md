@@ -63,9 +63,17 @@ function allowance(address _owner, address _spender) public view returns (uint25
 ![alt](images/plan_v0.1.png)
 
 ### System Architecture
-![alt](images/SystemArchitecture.png)
+![alt](images/SystemArchitecture_v1.0.0.png)
 
 #### BikeOrg
 Stores the bikeowners and users of the BikeSharing system.
 You can offer your bike to a Bike Org, if the members (bike owners) accept your request, you will be a member of the bike org. 
 
+
+
+## Visualization
+```
+daml build
+daml damlc visual .\.daml\dist\BikeSharing-1.0.0.dar --dot BikeSharing.dot
+dot -Tpng .\BikeSharing.dot -o daml.png
+```
