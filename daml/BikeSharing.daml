@@ -244,6 +244,14 @@ template BikeAccount with
                 let isBikeOwner = if elem owner org.members then True else False
                 create this with
                     isBikeOwner = isBikeOwner
+        controller issuer can
+            AddToken: ContractId BikeAccount with
+                    tokens: Decimal
+                do
+                    assertMsg "Tokens needs to be greater than 0.0" (tokens >0.0)
+                    create this with
+                        balance = this.balance+tokens
+
 
 template TokenTransfer with
         tokens: Decimal
@@ -326,7 +334,7 @@ template BikeOffering with
 template BikeUsageRight with
         owner: Party
         bikeId: Text
-        locked: Bool
+        locked: Bool -- true if Bike is taken and used by someone
         holder: Party
         from: Time  -- rename to start?
         to: Time    -- rename to end?
@@ -384,6 +392,7 @@ template BikeUsageRight with
                 price : Decimal
             controller requester
                 do
+                    assertMsg "bike must be locked to be able to make usage request - else use InstantTransfer" (locked)
                     assertMsg "current holder of the usage could not make request on own" (requester /= holder) 
                     create BikeUsageRequest with
                         bikeOwner = owner
@@ -393,10 +402,10 @@ template BikeUsageRight with
                         issuer = orgOwner
                         price
                         bikeUsageRightCid = self
-        choice Lock : (ContractId BikeUsageRight,ContractId ClosedBikeUsage) with
+        choice Release : (ContractId BikeUsageRight,ContractId ClosedBikeUsage) with
             controller holder
                 do 
-                    -- lock the BikeUsageRight, create a ClosedBikeUsage
+                    -- release the BikeUsageRight, create a ClosedBikeUsage
                     bikeUsageRightCid <- create this with
                         bikeCoin = 0.0
                         locked = False
@@ -515,6 +524,19 @@ template ClosedBikeUsage -- TODO ha nem tag hozza letre, akkor is latja (gondolo
     where
         signatory bikeOrgOwner
         observer bikeOwners
+        let 
+            addTokenToBikeOwner: Party->Update (ContractId BikeAccount)
+            addTokenToBikeOwner bikeOwner = 
+                do
+                    (bikeAccountCid,bikeAccount) <- fetchByKey @BikeAccount (bikeOrgOwner,bikeOrgName,bikeOwner)
+                    let coinToAdd = bikeCoin / (intToDecimal (length bikeOwners))
+                    if coinToAdd > 0.0 then
+                        exercise bikeAccountCid AddToken with
+                            tokens = coinToAdd
+                    else
+                        return bikeAccountCid
+            
+                    
 
         choice VoteForDivide : ContractId ClosedBikeUsage with
            party : Party
@@ -544,7 +566,7 @@ template ClosedBikeUsage -- TODO ha nem tag hozza letre, akkor is latja (gondolo
                     notVotedYet = voters2
                     numberOfVotedForNotDivide = incrementedVoted
 
-        choice AssessVoting : ContractId BikeUsageRight with
+        choice AssessVoting : [ContractId BikeAccount] with
          controller bikeOrgOwner
             do
                 assertMsg "Someone has not already voted" (notVotedYet == [])
@@ -554,7 +576,9 @@ template ClosedBikeUsage -- TODO ha nem tag hozza letre, akkor is latja (gondolo
                     then
                         do
                             -- TODO : divide and transfer the proper bikecoins
-                            bikeUsageRight <- fetch bikUsageRightCid
+                            mapA addTokenToBikeOwner bikeOwners
+
+                            {-bikeUsageRight <- fetch bikUsageRightCid
                             archive bikUsageRightCid
                             create BikeUsageRight with
                                 owner = bikeUsageRight.owner
@@ -568,15 +592,15 @@ template ClosedBikeUsage -- TODO ha nem tag hozza letre, akkor is latja (gondolo
                                 approvedBy = bikeUsageRight.approvedBy
                                 orgName = bikeUsageRight.orgName
                                 orgOwner = bikeUsageRight.orgOwner
-                                observers = bikeUsageRight.observers
+                                observers = bikeUsageRight.observers-}
                             
                     -- voters for not divide is major, or equal
                     -- not transfer out the coins, restore the usage right with the coins       
                     else
                         do
-                                bikeUsageRight <- fetch bikUsageRightCid
-                                archive bikUsageRightCid
-                                create BikeUsageRight with
+                                --bikeUsageRight <- fetch bikUsageRightCid
+                                --archive bikUsageRightCid
+                                {-create BikeUsageRight with
                                     owner = bikeUsageRight.owner
                                     bikeId = bikeUsageRight.bikeId
                                     locked = False
@@ -589,7 +613,16 @@ template ClosedBikeUsage -- TODO ha nem tag hozza letre, akkor is latja (gondolo
                                     orgName = bikeUsageRight.orgName
                                     orgOwner = bikeUsageRight.orgOwner
                                     observers = bikeUsageRight.observers
-                                
+                                -}
+                                -- TODO sendTokens to Org Account
+                                (bikeAccountCid,bikeAccount) <- fetchByKey @BikeAccount (bikeOrgOwner,bikeOrgName,bikeOrgOwner)
+                                if bikeCoin > 0.0 then
+                                    do
+                                        exercise bikeAccountCid AddToken with
+                                            tokens = bikeCoin
+                                        return [bikeAccountCid]
+                                else
+                                    return [bikeAccountCid]
 
 
                     
@@ -1042,7 +1075,7 @@ test_lock_bikeusageright = scenario do
 
     (bikeUsageRightCid,closedBikeUsageCid,oldBikeUsageRight) <- submit bnotOwner do
         oldBikeUsageRight <- fetch bikeUsageRightCid
-        (bikeUsageRightCid,closedBikeUsageCid) <- exercise bikeUsageRightCid Lock
+        (bikeUsageRightCid,closedBikeUsageCid) <- exercise bikeUsageRightCid Release
         return (bikeUsageRightCid,closedBikeUsageCid,oldBikeUsageRight)
     
     submit bowner1 do
@@ -1162,7 +1195,7 @@ test_make_BikeUsageRequest_and_Accept = scenario
             create BikeUsageRight with
                 owner = bme
                 bikeId = "RANDOM"
-                locked = False
+                locked = True
                 holder = bme
                 from = time
                 to = addRelTime time hour
@@ -1449,7 +1482,21 @@ test_voting_ClosedBikeUsage = scenario do
     bowner2 <- getParty "Bike Owner2"
     bowner3 <- getParty "Bike Owner3"
     bnotOwner <- getParty "Bike offerer"
-
+    bmeOrgCid <- submit bme do
+        bmeOrgCid<-create BikeOrg with
+            owner = bme
+            members = [bowner1,bowner2,bowner3]
+            observers = [bnotOwner]
+            name = "BME Bike Sharing org"
+            bikeIds = []
+        bmeAccountCid<-create BikeAccount with 
+            owner = bme
+            balance = 1500.0
+            name = "bme"
+            issuer = bme
+            isBikeOwner = False
+            bikeOrgName = "BME Bike Sharing org"
+        return bmeOrgCid
     time <- getTime
 
     bikeUsageRightCid <- submit bme do 
@@ -1461,13 +1508,13 @@ test_voting_ClosedBikeUsage = scenario do
                 from = time
                 to = time
                 fee = 500.0
-                bikeCoin =  0.0
+                bikeCoin =  500.0
                 approvedBy= [bowner2,bowner3,bowner1]
                 orgName = "BME Bike Sharing org"
                 orgOwner = bme
                 observers = [bme,bowner1, bowner2, bowner3, bnotOwner]
 
-    closedBikeUsageCid <- submit bme do 
+    {-closedBikeUsageCid <- submit bme do 
         create ClosedBikeUsage with
             bikUsageRightCid = bikeUsageRightCid
             bikeCoin = 3000.0
@@ -1480,7 +1527,9 @@ test_voting_ClosedBikeUsage = scenario do
             votersForDivide = []
             numberOfVotedForDivide = 0
             votersForNotDivide = []
-            numberOfVotedForNotDivide = 0
+            numberOfVotedForNotDivide = 0-}
+    (bikeUsageRightCid,closedBikeUsageCid) <- submit bme do
+        exercise bikeUsageRightCid Release
 
     -- not bike owner cannot vote
     submitMustFail bnotOwner do
@@ -1510,6 +1559,119 @@ test_voting_ClosedBikeUsage = scenario do
     -- another bike owner can vote
     closedBikeUsageCid <- submit bowner3 do
         exercise closedBikeUsageCid VoteForNotDivide with 
+            party = bowner3
+
+    -- org owner can assess voting
+    bikeUsageRightCid <- submit bme do
+        exercise closedBikeUsageCid AssessVoting
+
+
+    assertMsg "Hello" (True)
+
+test_assess_ClosedBikeUsage = scenario do
+    bme <- getParty "BME Bike sharing"
+    bowner1 <- getParty "Bike Owner1"
+    bowner2 <- getParty "Bike Owner2"
+    bowner3 <- getParty "Bike Owner3"
+    bnotOwner <- getParty "Bike offerer"
+    bmeOrgCid <- submit bme do
+        create BikeOrg with
+            owner = bme
+            members = [bowner1,bowner2,bowner3]
+            observers = [bnotOwner]
+            name = "BME Bike Sharing org"
+            bikeIds = []
+    time <- getTime
+
+    (bmeAccountCid ,bowner1AccountCid,bowner2AccountCid,bowner3AccountCid)<- submit bme do -- tegyuk fel, hogy most a bme hozta letre az accountokat
+        bmeAccountCid<-create BikeAccount with 
+            owner = bme
+            balance = 1500.0
+            name = "bme"
+            issuer = bme
+            isBikeOwner = False
+            bikeOrgName = "BME Bike Sharing org"
+        bowner1AccountCid<-create BikeAccount with 
+            owner = bowner1
+            balance = 1500.0
+            name = "bowner1"
+            issuer = bme
+            isBikeOwner = False
+            bikeOrgName = "BME Bike Sharing org"
+        bowner2AccountCid<-create BikeAccount with 
+            owner = bowner2
+            balance = 1500.0
+            name = "bowner1"
+            issuer = bme
+            isBikeOwner = False
+            bikeOrgName = "BME Bike Sharing org"
+        bowner3AccountCid<-create BikeAccount with 
+            owner = bowner3
+            balance = 1500.0
+            name = "bowner1"
+            issuer = bme
+            isBikeOwner = False
+            bikeOrgName = "BME Bike Sharing org"
+        return (bmeAccountCid,bowner1AccountCid,bowner2AccountCid,bowner3AccountCid)
+
+    bikeUsageRightCid <- submit bme do 
+        create BikeUsageRight with
+                owner = bme
+                bikeId = "RANDOM"
+                locked = True
+                holder = bme
+                from = time
+                to = time
+                fee = 500.0
+                bikeCoin =  0.0
+                approvedBy= [bowner2,bowner3,bowner1]
+                orgName = "BME Bike Sharing org"
+                orgOwner = bme
+                observers = [bme,bowner1, bowner2, bowner3, bnotOwner]
+
+    closedBikeUsageCid <- submit bme do 
+        create ClosedBikeUsage with
+            bikUsageRightCid = bikeUsageRightCid
+            bikeCoin = 3000.0
+            bikeOwners = [bowner1, bowner2, bowner3]
+            bikeOrgOwner = bme
+            bikeOrgName = "BME Bike Sharing org"
+            transferOut = 0
+            noTransferOut = 0
+            notVotedYet = [bowner1, bowner2, bowner3]
+            votersForDivide = []
+            numberOfVotedForDivide = 0
+            votersForNotDivide = []
+            numberOfVotedForNotDivide = 0
+
+    -- not bike owner cannot vote
+    submitMustFail bnotOwner do
+            exercise closedBikeUsageCid VoteForDivide with
+                party = bnotOwner
+
+    -- bike owner can vote
+    closedBikeUsageCid <- submit bowner1 do
+        exercise closedBikeUsageCid VoteForDivide with 
+            party = bowner1
+
+    -- if bike owner has already vote, cannot vote again
+    submitMustFail bowner1 do
+        exercise closedBikeUsageCid VoteForDivide with 
+            party = bowner1
+
+    -- if bike owner has already vote, cannot vote again
+    submitMustFail bowner1 do
+        exercise closedBikeUsageCid VoteForDivide with 
+            party = bowner1
+
+    -- another bike owner can vote
+    closedBikeUsageCid <- submit bowner2 do
+        exercise closedBikeUsageCid VoteForDivide with 
+            party = bowner2
+
+    -- another bike owner can vote
+    closedBikeUsageCid <- submit bowner3 do
+        exercise closedBikeUsageCid VoteForDivide with 
             party = bowner3
 
     -- org owner can assess voting
