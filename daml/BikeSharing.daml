@@ -661,7 +661,6 @@ test_the_bike_token = scenario
         bme <- getParty "CommitteeOwner"
         bikeOwner1 <- getParty "BikeOwner1"
         bikeOwner2 <- getParty "BikeOwner2"
-        bikeOwner3 <- getParty "BikeOwner3"
 
         -- Create a committee this collects the bike owners
         bikeOrg <- submit bme do
@@ -688,6 +687,11 @@ test_the_bike_token = scenario
                 isBikeOwner = False
                 bikeOrgName = "BME Bikeorg"
             return (bikeOwner1AccountCid,bikeOwner2AccountCid)
+
+        submitMustFail bikeOwner1 do
+            exercise bikeOwner1AccountCid Transfer with
+                to = bikeOwner2
+                tokens = 1000.0
 
         (tokenTransferCid,bikeAccountCid) <- submit bikeOwner1 do
             exercise bikeOwner1AccountCid Transfer with
