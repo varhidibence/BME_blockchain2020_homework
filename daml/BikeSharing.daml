@@ -417,8 +417,6 @@ template BikeUsageRight with
                         bikeOwners = org.members
                         bikeOrgOwner = orgOwner
                         bikeOrgName = orgName
-                        transferOut = 0
-                        noTransferOut = 0
                         notVotedYet = org.members
                         votersForDivide = []
                         numberOfVotedForDivide = 0
@@ -514,8 +512,6 @@ template ClosedBikeUsage -- TODO ha nem tag hozza letre, akkor is latja (gondolo
         bikeOwners: [Party]
         bikeOrgOwner:Party
         bikeOrgName: Text
-        transferOut: Int
-        noTransferOut: Int
         notVotedYet : [Party]
         votersForDivide: [Party]
         numberOfVotedForDivide: Int
@@ -575,46 +571,12 @@ template ClosedBikeUsage -- TODO ha nem tag hozza letre, akkor is latja (gondolo
                 if (numberOfVotedForDivide > numberOfVotedForNotDivide)
                     then
                         do
-                            -- TODO : divide and transfer the proper bikecoins
                             mapA addTokenToBikeOwner bikeOwners
-
-                            {-bikeUsageRight <- fetch bikUsageRightCid
-                            archive bikUsageRightCid
-                            create BikeUsageRight with
-                                owner = bikeUsageRight.owner
-                                bikeId = bikeUsageRight.bikeId
-                                locked = False
-                                holder = bikeUsageRight.holder
-                                from = bikeUsageRight.from
-                                to = bikeUsageRight.to
-                                fee = bikeUsageRight.fee
-                                bikeCoin = bikeUsageRight.bikeCoin
-                                approvedBy = bikeUsageRight.approvedBy
-                                orgName = bikeUsageRight.orgName
-                                orgOwner = bikeUsageRight.orgOwner
-                                observers = bikeUsageRight.observers-}
                             
                     -- voters for not divide is major, or equal
                     -- not transfer out the coins, restore the usage right with the coins       
                     else
                         do
-                                --bikeUsageRight <- fetch bikUsageRightCid
-                                --archive bikUsageRightCid
-                                {-create BikeUsageRight with
-                                    owner = bikeUsageRight.owner
-                                    bikeId = bikeUsageRight.bikeId
-                                    locked = False
-                                    holder = bikeUsageRight.holder
-                                    from = bikeUsageRight.from
-                                    to = bikeUsageRight.to
-                                    fee = bikeUsageRight.fee
-                                    bikeCoin = this.bikeCoin
-                                    approvedBy = bikeUsageRight.approvedBy
-                                    orgName = bikeUsageRight.orgName
-                                    orgOwner = bikeUsageRight.orgOwner
-                                    observers = bikeUsageRight.observers
-                                -}
-                                -- TODO sendTokens to Org Account
                                 (bikeAccountCid,bikeAccount) <- fetchByKey @BikeAccount (bikeOrgOwner,bikeOrgName,bikeOrgOwner)
                                 if bikeCoin > 0.0 then
                                     do
@@ -1640,8 +1602,6 @@ test_assess_ClosedBikeUsage = scenario do
             bikeOwners = [bowner1, bowner2, bowner3]
             bikeOrgOwner = bme
             bikeOrgName = "BME Bike Sharing org"
-            transferOut = 0
-            noTransferOut = 0
             notVotedYet = [bowner1, bowner2, bowner3]
             votersForDivide = []
             numberOfVotedForDivide = 0
