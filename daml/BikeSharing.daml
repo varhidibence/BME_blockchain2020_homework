@@ -261,6 +261,7 @@ template TokenTransfer with
         from: Party
     where
         signatory from,issuer
+        observer to
 
         controller to can
             Accept: ContractId BikeAccount with
@@ -359,6 +360,9 @@ template BikeUsageRight with
             controller holder
                 do
                     -- assertMsg "Only the holder" (party == holder)
+                    assertMsg "Price should be >= 0" (price >=0.0)
+                    isBikeOwner <- partyIsBikeOwner party orgName orgOwner
+                    assertMsg "BikeOwner can not sell BikeUsageRight" (not isBikeOwner || price == 0.0)
                     create BikeUsageTransfer with
                         oldHolder = holder
                         newHolder = party
