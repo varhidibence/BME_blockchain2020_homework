@@ -822,81 +822,6 @@ test_register_bike = scenario
             assertMsg "Bofferer has to be a bike owner" (isBikeOwner)
         {-- end approve bike offering test --}
 
-test_handleBikeUsageTransfer_function = scenario -- Tests nothing
-    do
-        -- create org
-        bme <- getParty "BME Bike sharing"
-        bowner1 <- getParty "Bike Owner1"
-        bnotOwner1 <- getParty "Not BikeOwner1"
-        bowner2 <- getParty "Bike Owner2"
-        bnotOwner2 <- getParty "Not BikeOwner2"
-
-
-        bmeOrgCid <- submit bme do
-            create BikeOrg with
-                owner = bme
-                members = [bowner1,bme,bowner2]
-                observers = [bnotOwner1,bnotOwner2]
-                name = "BME Bike Sharing org"
-                bikeIds = []
-        
-        -- create BikeUsageRight
-        bikeUsageRightCid <- submit bme do
-            time <- getTime
-            org <- fetch bmeOrgCid
-            create BikeUsageRight with
-                owner = bme
-                bikeId = "RANDOM"
-                locked = False
-                holder = bme
-                from = time
-                to = time
-                fee = 500.0
-                bikeCoin =  0.0
-                approvedBy= [bowner1]
-                orgName = "BME Bike Sharing org"
-                orgOwner = bme
-                observers = org.members ++ org.observers
-        -- create BikeAccounts
-        (bmeAccountCid ,bowner1AccountCid,bnotOwner1AccountCid,bowner2AccountCid,bnotOwner2AccountCid)<- submit bme do -- tegyuk fel, hogy most a bme hozta letre az accountokat
-            bmeAccountCid<-create BikeAccount with 
-                owner = bme
-                balance = 1500.0
-                name = "bme"
-                issuer = bme
-                isBikeOwner = False
-                bikeOrgName = "BME Bike Sharing org"
-            bowner1AccountCid<-create BikeAccount with 
-                owner = bowner1
-                balance = 1500.0
-                name = "bowner1"
-                issuer = bme
-                isBikeOwner = False
-                bikeOrgName = "BME Bike Sharing org"
-            bnotOwner1AccountCid<-create BikeAccount with 
-                owner = bnotOwner1
-                balance = 1500.0
-                name = "bnotOwner"
-                issuer = bme
-                isBikeOwner = False
-                bikeOrgName = "BME Bike Sharing org"
-            bowner2AccountCid<-create BikeAccount with 
-                owner = bowner2
-                balance = 1500.0
-                name = "bowner1"
-                issuer = bme
-                isBikeOwner = False
-                bikeOrgName = "BME Bike Sharing org"
-            bnotOwner2AccountCid<-create BikeAccount with 
-                owner = bnotOwner2
-                balance = 1500.0
-                name = "bnotOwner"
-                issuer = bme
-                isBikeOwner = False
-                bikeOrgName = "BME Bike Sharing org"
-            return (bmeAccountCid ,bowner1AccountCid,bnotOwner1AccountCid,bowner2AccountCid,bnotOwner2AccountCid)
-
-        assertMsg "Hello" (True)
 test_instanttranfer_bikeusageright = scenario do
     bme <- getParty "BME Bike sharing"
     bowner1 <- getParty "Bike Owner1"
@@ -1127,7 +1052,7 @@ test_make_BikeUsageRequest_and_Accept = scenario
                 name = "BME Bike Sharing org"
                 bikeIds = []
 
-        --create a bike account
+        --create a bike accounts
         bmeAccountCid <- submit bme do -- tegyuk fel, hogy most a bme hozta letre az accountokat
             create BikeAccount with 
                 owner = bme
@@ -1330,17 +1255,17 @@ test_one_bikeUsageRight_atOneTime1 = scenario do
         exercise bmeOrgCid CreateBikeUsageRight with
             bikeId = "BIKEID1"
             fee = 200.0
-    -- can not create another one with the same BIKEID
-    submitMustFail bme do
-        exercise bmeOrgCid CreateBikeUsageRight with
-            bikeId = "BIKEID1"
-            fee = 200.0
-    
+
     (bikeUsageRightCid2,bmeOrgCid) <- submit bme do
         exercise bmeOrgCid CreateBikeUsageRight with
             bikeId = "BIKEID2"
             fee = 200.0
 
+    -- can not create another one with the same BIKEID
+    submitMustFail bme do
+        exercise bmeOrgCid CreateBikeUsageRight with
+            bikeId = "BIKEID1"
+            fee = 200.0
     -- Use it with instant transfer
     (bikeUsageRightCid,bmeAccountCid,optionalTokenTransfer)<-submit bme do
         bmeAccountCid<-create BikeAccount with 
