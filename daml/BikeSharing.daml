@@ -991,17 +991,55 @@ test_transfer_bikeusageright = scenario
         bme <- getParty "BME Bike sharing"
         bowner1 <- getParty "Bike Owner1"
         bowner2 <- getParty "Bike Owner2"
-        bowner3 <- getParty "Bike Owner3"
-        bofferer <- getParty "Bike offerer"
+        bnotowner1 <- getParty "Not Bike owner 1"
+        bnotowner2 <- getParty "Not Bike owner 2"
 
         bmeOrgCid <- submit bme do
             create BikeOrg with
                 owner = bme
-                members = [bowner1,bowner2,bowner3]
-                observers = [bofferer]
+                members = [bowner1,bowner2]
+                observers = [bnotowner1,bnotowner2]
                 name = "BME Bike Sharing org"
                 bikeIds = []
         
+        (bmeAccountCid ,bowner1AccountCid,bowner2AccountCid,bnotOwner1AccountCid,bnotOwner2AccountCid)<- submit bme do -- tegyuk fel, hogy most a bme hozta letre az accountokat
+            bmeAccountCid<-create BikeAccount with 
+                owner = bme
+                balance = 1500.0
+                name = "bme"
+                issuer = bme
+                isBikeOwner = False
+                bikeOrgName = "BME Bike Sharing org"
+            bowner1AccountCid<-create BikeAccount with 
+                owner = bowner1
+                balance = 1500.0
+                name = "bowner1"
+                issuer = bme
+                isBikeOwner = False
+                bikeOrgName = "BME Bike Sharing org"
+            bowner2AccountCid<-create BikeAccount with 
+                owner = bowner2
+                balance = 1500.0
+                name = "bowner2"
+                issuer = bme
+                isBikeOwner = False
+                bikeOrgName = "BME Bike Sharing org"
+            bnotOwner1AccountCid<-create BikeAccount with 
+                owner = bnotowner1
+                balance = 1500.0
+                name = "bnotOwner1"
+                issuer = bme
+                isBikeOwner = False
+                bikeOrgName = "BME Bike Sharing org"
+            bnotOwner2AccountCid<-create BikeAccount with 
+                owner = bnotowner2
+                balance = 1500.0
+                name = "bnotOwner2"
+                issuer = bme
+                isBikeOwner = False
+                bikeOrgName = "BME Bike Sharing org"
+            return (bmeAccountCid ,bowner1AccountCid,bowner2AccountCid,bnotOwner1AccountCid,bnotOwner2AccountCid)
+
         -- try create a token as bowner1
         submitMustFail bowner1 do
             time <- getTime
@@ -1014,12 +1052,12 @@ test_transfer_bikeusageright = scenario
                 to = time
                 fee = 500.0
                 bikeCoin = 100.0
-                approvedBy= [bowner2,bowner3,bowner1]
+                approvedBy= [bowner2,bowner1]
                 orgName = "BME Bike Sharing org"
                 orgOwner = bme
-                observers = [bowner1,bowner2,bowner3]
+                observers = [bowner1,bowner2]
         -- Org can create ORG BikeTokens
-        bikeUsageRight <- submit bme do
+        (bikeUsageRight,bikeUsageRightCid) <- submit bme do
             time <- getTime
             org <- fetch bmeOrgCid
             bikeUsageRightCid <- create BikeUsageRight with
@@ -1031,13 +1069,78 @@ test_transfer_bikeusageright = scenario
                 to = time
                 fee = 500.0
                 bikeCoin = 100.0
-                approvedBy= [bowner2,bowner3,bowner1]
+                approvedBy= [bowner2,bowner1]
                 orgName = "BME Bike Sharing org"
                 orgOwner = bme
                 observers = org.members ++ org.observers
-            fetch bikeUsageRightCid
+            bikeUsageRight <- fetch bikeUsageRightCid
+            return (bikeUsageRight,bikeUsageRightCid)
         assertMsg "Token needs to have 100 bikeCoin" (bikeUsageRight.bikeCoin == 100.0)
         {-- Test the token --}
+        -- transfer form non bike owner to non bike owner
+        bikeUsageTransferCid <- submit bme do
+            exercise bikeUsageRightCid TransferBikeUsage with
+                party = bnotowner1
+                price = 0.0
+        
+        (bikeUsageRightCid,bnotowner1AccountCid,tokenTransfer)<- submit bnotowner1 do
+            (bikeUsageRightCid,bnotOwner1AccountCid,tokenTransfer)<-exercise bikeUsageTransferCid AcceptBikeUsageTransfer with
+                accountCid = bnotOwner1AccountCid
+            bikeUsageRight <- fetch bikeUsageRightCid
+            assertMsg "Contract needs to collect the fee" (bikeUsageRight.bikeCoin == 600.0)
+            return (bikeUsageRightCid,bnotOwner1AccountCid,tokenTransfer)
+        -- non holder can not transfer bikeusageright
+        submitMustFail bme do
+            exercise bikeUsageRightCid TransferBikeUsage with
+                party = bnotowner1
+                price = 0.0
+        -- can not sell to bike owner
+        submitMustFail bnotowner1 do
+            exercise bikeUsageRightCid TransferBikeUsage with
+                party = bowner1
+                price = 100.0
+        -- transfer from non bike owner to non bike owner for money
+        bikeUsageTransferCid <- submit bnotowner1 do
+            exercise bikeUsageRightCid TransferBikeUsage with
+                party = bnotowner2
+                price = 100.0
+        
+        (bikeUsageRightCid,bikeAccountCid,tokenTransfer)<- submit bnotowner2 do
+            (bikeUsageRightCid,bikeAccountCid,tokenTransferCid)<-exercise bikeUsageTransferCid AcceptBikeUsageTransfer with
+                accountCid = bnotOwner2AccountCid
+            bikeUsageRight <- fetch bikeUsageRightCid
+            assertMsg "Contract needs to collect the fee" (bikeUsageRight.bikeCoin == 1100.0)
+            tokenTransfer <- fetch (fromSome tokenTransferCid)
+            assertMsg "token transfer needs to be created" (tokenTransfer.tokens == 100.0)
+            return (bikeUsageRightCid,bikeAccountCid,tokenTransfer)
+        -- non owner to owner
+        bikeUsageTransferCid <- submit bnotowner2 do
+            exercise bikeUsageRightCid TransferBikeUsage with
+                party = bowner1
+                price = 0.0
+        
+        (bikeUsageRightCid,bikeAccountCid,tokenTransfer)<- submit bowner1 do
+            (bikeUsageRightCid,bikeAccountCid,tokenTransferCid)<-exercise bikeUsageTransferCid AcceptBikeUsageTransfer with
+                accountCid = bowner1AccountCid
+            bikeUsageRight <- fetch bikeUsageRightCid
+            assertMsg "No charge because bowner1 is an owner" (bikeUsageRight.bikeCoin == 1100.0)
+            return (bikeUsageRightCid,bikeAccountCid,tokenTransfer)
+        assertMsg "Hello" (True)
+        -- owner to not owner
+        bikeUsageTransferCid <- submit bowner1 do
+            exercise bikeUsageRightCid TransferBikeUsage with
+                party = bnotowner1
+                price = 0.0
+        
+        (bikeUsageRightCid,bikeAccountCid,tokenTransfer)<- submit bnotowner1 do
+            (bikeUsageRightCid,bikeAccountCid,tokenTransferCid)<-exercise bikeUsageTransferCid AcceptBikeUsageTransfer with
+                accountCid = bnotowner1AccountCid
+            bikeUsageRight <- fetch bikeUsageRightCid
+            assertMsg "No charge because bowner1 is an owner" (bikeUsageRight.bikeCoin == 1100.0)
+            tokenTransfer <- fetch (fromSome tokenTransferCid)
+            assertMsg "token transfer needs to be created" (tokenTransfer.tokens == 500.0)
+            return (bikeUsageRightCid,bikeAccountCid,tokenTransfer)
+        assertMsg "Hello" (True)
 
 test_make_BikeUsageRequest_and_Accept = scenario 
     do
